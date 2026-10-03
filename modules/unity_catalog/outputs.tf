@@ -17,6 +17,11 @@ output "env_catalogs" {
   value       = local.env_catalogs
 }
 
+output "volume_paths" {
+  description = "Volumejen polut, esim. /Volumes/bronze/taxi/raw"
+  value       = [for v in databricks_volume.bronze : "/Volumes/${v.catalog_name}/${v.schema_name}/${v.name}"]
+}
+
 output "schema_names" {
   description = "Kaikki luodut schemat muodossa catalog.schema"
   value       = concat([for s in databricks_schema.bronze : s.id], keys(databricks_schema.env))

@@ -5,3 +5,7 @@ output "catalogs" {
 output "schemas" {
   value = module.unity_catalog.schema_names
 }
+
+output "volumes" {
+  value = module.unity_catalog.volume_paths
+}

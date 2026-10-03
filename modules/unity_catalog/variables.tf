@@ -24,6 +24,12 @@ variable "bronze_schemas" {
   default     = []
 }
 
+variable "bronze_volumes" {
+  type        = map(list(string))
+  description = "Bronzen schema => volumet raakatiedostoille. Scheman pitää olla bronze_schemas-listassa."
+  default     = {}
+}
+
 variable "domain_schemas" {
   type        = map(map(list(string)))
   description = "Domain => kerros => schemat, jotka luodaan domainin sen kerroksen catalogeihin kaikissa ympäristöissä"

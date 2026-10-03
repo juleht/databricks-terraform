@@ -17,6 +17,15 @@ locals {
       ]
     ]) : "${s.catalog}.${s.schema}" => s
   }
+
+  # Bronzen volumet, esim. "taxi.raw" => { schema = "taxi", volume = "raw" }
+  bronze_volumes = {
+    for v in flatten([
+      for schema, volumes in var.bronze_volumes : [
+        for volume in volumes : { schema = schema, volume = volume }
+      ]
+    ]) : "${v.schema}.${v.volume}" => v
+  }
 }
 
 data "databricks_sql_warehouse" "this" {
@@ -53,6 +62,17 @@ resource "databricks_schema" "bronze" {
   catalog_name = module.bronze.name
   name         = each.key
   comment      = "Hallinnoi Terraform (shared)"
+}
+
+# Bronzen volumet raakatiedostoille (managed: tiedostot metastoren oletustallennustilassa)
+resource "databricks_volume" "bronze" {
+  for_each = local.bronze_volumes
+
+  catalog_name = module.bronze.name
+  schema_name  = databricks_schema.bronze[each.value.schema].name # virhe, jos schemaa ei ole bronze_schemas-listassa
+  name         = each.value.volume
+  volume_type  = "MANAGED"
+  comment      = "Raakatiedostot sellaisenaan. Hallinnoi Terraform (shared)"
 }
 
 # Silverin ja goldin schemat domaineittain
