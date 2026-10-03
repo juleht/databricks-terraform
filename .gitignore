@@ -46,3 +46,6 @@ terraform.rc
 ## environment specific files
 # Ignore .env files which are used to set environment variables for local development
 .env
+
+# Terraform plan files
+tfplan

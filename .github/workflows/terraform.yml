@@ -1,0 +1,117 @@
+name: Terraform
+
+# PR: fmt, validate ja plan -> plan kommentiksi PR:ään
+# main: plan -> odottaa hyväksyntää (environment "production") -> apply
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Vain yksi Terraform-ajo kerrallaan, eikä keskeneräistä ajoa peruta
+concurrency:
+  group: terraform
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  TF_IN_AUTOMATION: "true"
+  # Provider ja Databricks CLI (local-exec) lukevat nämä automaattisesti
+  DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+# shell: bash lisää pipefailin, jolloin "terraform plan | tee" kaatuu, jos plan kaatuu
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+          terraform_wrapper: false
+
+      # Catalogien SQL-luonti (modules/catalog) tarvitsee Databricks CLI:n
+      - uses: databricks/setup-cli@main
+
+      - run: terraform init -input=false
+      - run: terraform fmt -check -recursive
+      - run: terraform validate -no-color
+      - run: terraform plan -input=false -no-color -out=tfplan | tee plan.txt
+
+      # Poistosuoja: PR, jonka plan poistaa resursseja, vaatii labelin "allow-destroy".
+      # mainissa poistot näytetään yhteenvedossa ennen hyväksyntää.
+      - name: Tarkista poistot
+        env:
+          ALLOW_DESTROY: ${{ contains(github.event.pull_request.labels.*.name, 'allow-destroy') }}
+        run: |
+          deletes=$(terraform show -json tfplan | jq -r '.resource_changes[] | select(.change.actions | index("delete")) | .address')
+          if [ -z "$deletes" ]; then
+            echo "Ei poistettavia resursseja." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          { echo "### ⚠️ Plan poistaa resursseja"; echo '```'; echo "$deletes"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "$ALLOW_DESTROY" != "true" ]; then
+            echo "::error::Plan poistaa resursseja. Lisää PR:ään label 'allow-destroy', jos poisto on tarkoituksellinen."
+            exit 1
+          fi
+
+      - name: Plan PR-kommentiksi
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('plan.txt', 'utf8').slice(-60000);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '### Terraform plan\n```\n' + plan + '\n```',
+            });
+
+      - name: Plan yhteenvetoon
+        run: |
+          { echo "### Terraform plan"; echo '```'; tail -c 60000 plan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tallenna plan apply-jobille
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: tfplan
+          retention-days: 1
+
+  apply:
+    needs: plan
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # Pysähtyy odottamaan hyväksyntää (Settings -> Environments -> production -> Required reviewers)
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+          terraform_wrapper: false
+
+      - uses: databricks/setup-cli@main
+
+      - run: terraform init -input=false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+
+      # Ajaa täsmälleen sen planin, joka hyväksyttiin
+      - run: terraform apply -input=false -no-color tfplan
