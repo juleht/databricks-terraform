@@ -23,8 +23,10 @@ env:
   # Provider ja Databricks CLI (local-exec) lukevat nämä automaattisesti
   DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
   DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+  # Secret eikä variable: julkisen repon lokit ovat julkisia, ja secretit peitetään niissä
+  TF_VAR_account_id: ${{ secrets.DATABRICKS_ACCOUNT_ID }}
 
-# shell: bash lisää pipefailin, jolloin "terraform plan | tee" kaatuu, jos plan kaatuu
+# shell: bash ajaa komennot asetuksilla -eo pipefail, jolloin putken (|) mikä tahansa vaihe kaataa stepin
 defaults:
   run:
     shell: bash
@@ -46,7 +48,10 @@ jobs:
       - run: terraform init -input=false
       - run: terraform fmt -check -recursive
       - run: terraform validate -no-color
-      - run: terraform plan -input=false -no-color -out=tfplan | tee plan.txt
+      - run: terraform plan -input=false -no-color -out=tfplan
+      # PR-kommentti ja yhteenveto tehdään show-komennolla: siinä ei ole "Refreshing state... [id=...]"
+      # -rivejä, joissa näkyisi resurssien id:itä (esim. account ID). Secretit peitetään vain lokeissa.
+      - run: terraform show -no-color tfplan > plan.txt
 
       # Poistosuoja: PR, jonka plan poistaa resursseja, vaatii labelin "allow-destroy".
       # mainissa poistot näytetään yhteenvedossa ennen hyväksyntää.
@@ -83,13 +88,8 @@ jobs:
         run: |
           { echo "### Terraform plan"; echo '```'; tail -c 60000 plan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Tallenna plan apply-jobille
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan
-          path: tfplan
-          retention-days: 1
+      # tfplan-tiedostoa ei tallenneta artifactiksi: julkisessa repossa artifactit ovat kenen tahansa
+      # ladattavissa, ja plan-tiedostossa sensitiiviset arvot (account ID, sähköpostit) ovat selväkielisinä.
 
   apply:
     needs: plan
@@ -109,9 +109,6 @@ jobs:
 
       - run: terraform init -input=false
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: tfplan
-
-      # Ajaa täsmälleen sen planin, joka hyväksyttiin
-      - run: terraform apply -input=false -no-color tfplan
+      # Plan tehdään uudelleen ja ajetaan heti. Hyväksytty plan näkyy plan-jobin yhteenvedossa,
+      # ja concurrency estää muita ajoja muuttamasta tilaa välissä.
+      - run: terraform apply -input=false -no-color -auto-approve
